@@ -8,6 +8,9 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 """
 
+import math
+from os import cpu_count
+import os
 from typing import List
 from enum import Enum, auto
 import abc
@@ -209,6 +212,26 @@ def dominates(a: list, b: list, cmp, targets: MaxMinList) -> Domination:
         return Domination.LESS
     return Domination.EQUAL
 
+import numpy as np
+def wrapper(args):
+    # print('worker start', os.getpid())
+    fn, values, args_stack = args
+    results = np.zeros((len(args_stack),), dtype=np.int64)
+    for i, args in enumerate(args_stack):
+        results[i] = fn(values[args[0]], values[args[1]]).value
+    # print('worker end', os.getpid())
+    return results
+
+import numba
+
+@numba.njit
+def init_index(args, dimension):
+    idx = 0
+    for i in range(dimension):
+        for j in range(i + 1, dimension):
+            args[idx, 0] = i
+            args[idx, 1] = j
+            idx += 1
 
 class DominanceMatrix:
     """
@@ -243,20 +266,46 @@ class DominanceMatrix:
         self.dominated_by_counter = defaultdict(int)
         self.values = list(values)
 
+        # print('a')
+        import multiprocessing as mp
+        import numpy as np
+        
+        args = np.zeros((dimension*(dimension-1)//2, 2), dtype=np.int64)
+        n_worker = min(max(1, mp.cpu_count()), len(args) // (2**12))
+        init_index(args, dimension)
+        batch_size = math.ceil(len(args) / n_worker) if n_worker > 0 else len(args)
+        
+        # print(n_worker)
+        if n_worker > 1:
+            with mp.Pool(n_worker) as pool:
+                results_stack = pool.map(wrapper, [(dominates, values, args[i*batch_size:(i+1)*batch_size]) for i in range(n_worker)])
+        else:
+            results_stack = [wrapper([(dominates, values, args[i*batch_size:(i+1)*batch_size]) for i in range(1)][0])]
+        results = np.concatenate(results_stack, axis=0)
+        assert len(results) == len(args)
+        
+        # print('cd')
+        
+        idx = 0
         for i in range(dimension):
             for j in range(i + 1, dimension):
                 a = values[i]
                 b = values[j]
-                rel = dominates(a, b)
-                if rel == Domination.GREATER:
+                # rel = dominates(a, b)
+                rel = results[idx]
+                idx += 1
+                if rel == 1:
                     self.is_dominating[a].append(b)
                     self.dominated_by_counter[b] += 1
-                elif rel == Domination.LESS:
+                elif rel == -1:
                     self.is_dominating[b].append(a)
                     self.dominated_by_counter[a] += 1
+        # print(len(self.dominated_by_counter), len(self.is_dominating), len(self.is_dominating[a]))
+        # print('b')
 
     def get_pareto_fronts(self):
         while self.values:
+            
             current_front = [ v for v in self.values if self.dominated_by_counter[v] == 0]
             yield current_front
 
