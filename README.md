@@ -1,3 +1,6 @@
+# pypareto-native
+
+HW-accelerated version of pypareto.
 
 # pypareto
 Pypareto is a Python library for pareto front seaching.
